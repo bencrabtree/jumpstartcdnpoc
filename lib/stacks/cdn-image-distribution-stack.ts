@@ -81,7 +81,19 @@ export class CdnImageDistributionStack extends cdk.Stack {
       }
     );
 
-    const functionAssociations = this.createFunctionAssociations();
+    // Create default lambda for custom response headers
+    const viewerResponseFunction = new cloudfront.Function(this, "Function", {
+      code: cloudfront.FunctionCode.fromFile({
+        filePath: "lib/cf-fns/viewer-response.js",
+      }),
+    });
+    const viewerResponsFunctionAssociation: cloudfront.FunctionAssociation = {
+      eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE,
+      function: viewerResponseFunction,
+    }
+
+    // Setup additional behaviors for each content type
+    const additionalBehaviors = this.createAdditionalBehaviors();
 
     // Create CloudFront distribution
     this.distribution = new cloudfront.Distribution(
@@ -90,13 +102,14 @@ export class CdnImageDistributionStack extends cdk.Stack {
       {
         defaultBehavior: {
           origin: new origins.S3Origin(this.bucket),
-          functionAssociations: functionAssociations,
+          functionAssociations: [viewerResponsFunctionAssociation],
           viewerProtocolPolicy:
             cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
           cachedMethods: cloudfront.CachedMethods.CACHE_GET_HEAD,
           compress: true,
         },
+        additionalBehaviors,
         comment: "CDN for image distribution",
         ...(webAclArn ? { webAclId: webAclArn } : undefined),
         // domainNames: [hostedZone.zoneName],
@@ -139,22 +152,40 @@ export class CdnImageDistributionStack extends cdk.Stack {
    *
    * @returns Array of CloudFront function associations to be applied to the distribution
    */
-  private createFunctionAssociations(): cloudfront.FunctionAssociation[] {
-    const functionAssociations: cloudfront.FunctionAssociation[] = [];
+  private createAdditionalBehaviors(): Record<string, cdk.aws_cloudfront.BehaviorOptions> {
 
-    // Add security headers to the response
-    const viewerResponseFunction = new cloudfront.Function(this, "Function", {
+    const svgFunction = new cloudfront.Function(this, 'SvgFunction', {
       code: cloudfront.FunctionCode.fromFile({
-        filePath: "lib/cf-fns/viewer-response.js",
+        filePath: 'lib/cf-fns/svg-response.js',
       }),
     });
-    const viewerResponsFunctionAssociation: cloudfront.FunctionAssociation = {
-      eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE,
-      function: viewerResponseFunction,
-    }
-    functionAssociations.push(viewerResponsFunctionAssociation);
 
-    return functionAssociations;
+    const notebookFunction = new cloudfront.Function(this, 'NotebookFunction', {
+      code: cloudfront.FunctionCode.fromFile({
+        filePath: 'lib/cf-fns/notebook-response.js',
+      }),
+    });
+
+    const svgFunctionAssociation: cloudfront.FunctionAssociation = {
+      eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE,
+      function: svgFunction,
+    };
+
+    const notebookFunctionAssociation: cloudfront.FunctionAssociation = {
+      eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE,
+      function: notebookFunction,
+    };
+
+    return {
+      '*.svg': {
+        origin: new origins.S3Origin(this.bucket),
+        functionAssociations: [svgFunctionAssociation],
+      },
+      '*.ipynb': {
+        origin: new origins.S3Origin(this.bucket),
+        functionAssociations: [notebookFunctionAssociation],
+      },
+    };
   }
 
   /**
